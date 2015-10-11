@@ -17,6 +17,7 @@ LHCb opposite side (OS) B-tagging algorithms upgrading
 * tracking tagger
 * vertex tagger
 * union of traking and vertex tagger
+* isotonic calibration
 
 
 ### Tracking tagger 
