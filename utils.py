@@ -6,12 +6,20 @@ from matplotlib import pyplot as plt
 import pandas
 from sklearn.metrics import roc_auc_score
 
+
+N_all = 7.42867714256286621e+05
 def union(*arrays):
     return numpy.concatenate(arrays)
 
 
 def statistics(data):
-    return {'Events': len(numpy.unique(data.event)), 'tracks': len(data)}
+    return {'Events': len(numpy.unique(data.unique)), 'tracks': len(data)}
+
+
+def get_events_number(data):
+    _, data_ids = numpy.unique(data.unique, return_inverse=True)
+    weights = numpy.bincount(data_ids, weights=data.N_sig_sw) / numpy.bincount(data_ids)
+    return numpy.sum(weights)
 
     
 def run_flat_probs(probs, labels, weights, label=1):
@@ -31,6 +39,7 @@ def calibration(estimator, datasets, steps=100):
     iso_calibs = []
     aucs = []
     D2 = []
+    omega = []
     data = pandas.concat(datasets)
     probs = union(*[estimator.predict_proba(dataset)[:, 1] for dataset in datasets])
     if 'tag' in set(data.columns):
@@ -40,7 +49,7 @@ def calibration(estimator, datasets, steps=100):
     labels = data.label.values
     for step in range(steps):
         train_probs, test_probs, train_labels, test_labels, train_weights, test_weights = train_test_split_group(
-            data['event'], probs, labels, weights, train_size=0.5)
+            data['unique'], probs, labels, weights, train_size=0.5)
         iso_est = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
         iso_est.fit(train_probs, train_labels, train_weights)
         iso_calibs.append(iso_est)
@@ -48,15 +57,19 @@ def calibration(estimator, datasets, steps=100):
         probs_calib = iso_est.transform(test_probs)
         alpha = (1 - 2 * (1 - probs_calib))**2
         D2.append(sum(alpha * test_weights) / sum(test_weights))
-    return D2, alpha, aucs, iso_calibs
+        omega.append(sum((1 - probs_calib) * test_weights) / sum(test_weights))
+    return D2, aucs, iso_calibs, omega
     
     
-def result_table(eff_tag, eff_delta, D2, name='model'):
+def result_table(eff_tag, eff_delta, D2, name='model', omega=None):
     from collections import OrderedDict
     result = OrderedDict()
     result['name'] = name
     result['$\epsilon_{tag}, \%$'] = [eff_tag * 100]
     result['$\Delta \epsilon_{tag}, \%$'] = [eff_delta * 100]
+    if omega is not None:
+        result['$w$'] = [numpy.mean(omega)]
+        result['$\Delta w$'] = [numpy.var(omega)]
     result['$D^2$'] = [numpy.mean(D2)]
     result['$\Delta D^2$'] = [numpy.var(D2)]
     result['$\epsilon, \%$'] = [numpy.mean(D2) * eff_tag * 100]
