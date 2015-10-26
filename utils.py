@@ -10,6 +10,8 @@ from sklearn.isotonic import IsotonicRegression
 from matplotlib import pyplot as plt
 from rep.utils import train_test_split, train_test_split_group, Flattener
 from scipy.special import logit, expit
+from matplotlib import pyplot as plt
+from sklearn.metrics import roc_curve
 
 
 def union(*arrays):
@@ -142,7 +144,7 @@ def result_table(tagging_efficiency, tagging_efficiency_delta, D2, auc, name='mo
     epsilon = numpy.mean(D2) * tagging_efficiency * 100.
     result['$\epsilon, \%$'] = [epsilon]
     relative_D2_error = numpy.std(D2) / numpy.mean(D2)
-    relative_eff_error = efficiency_delta / tagging_efficiency
+    relative_eff_error = tagging_efficiency_delta / tagging_efficiency
     relative_epsilon_error = numpy.sqrt(relative_D2_error ** 2 + relative_eff_error ** 2) 
     result['$\Delta \epsilon, \%$'] = [relative_epsilon_error * epsilon]
     result['AUC, with untag'] = [numpy.mean(auc) * 100]
@@ -172,6 +174,8 @@ def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, thr
     probs_2 = probs[ind_2]
     
     if logistic:
+        probs_1 = numpy.clip(probs_1, 0.001, 0.999)
+        probs_2 = numpy.clip(probs_2, 0.001, 0.999)
         probs_1 = logit(probs_1)[:, numpy.newaxis]
         probs_2 = logit(probs_2)[:, numpy.newaxis]
         est_calib_1.fit(probs_1, labels[ind_1])
@@ -229,6 +233,109 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
     log_probs = numpy.log(probs) - numpy.log(1 - probs)
     log_probs *= data[sign_part_column].values
     result_logprob = numpy.bincount(data_ids, weights=log_probs)
+    # simply reconstructing original
     result_label = numpy.bincount(data_ids, weights=data[signB_column].values) / numpy.bincount(data_ids)
     result_weight = numpy.bincount(data_ids, weights=data[weight_column]) / numpy.bincount(data_ids)
     return result_label, result_weight, expit(result_logprob), result_event_id
+
+
+def get_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_column='signTrack', part_name='track'):
+    """
+    Predict probabilities for event parts, calibrate it and compute B data.
+    Return B data for given part of event:tracks/vertices.
+    
+    :param estimator: REP classifier, already trained model.
+    :param datasets: list of pandas.DataFrames to predict.
+    :param logistic: bool, use logistic or isotonic regression for part (track/vertex) probabilities calibration
+    :param sign_part_column: column for part sign in data
+    :param part_name: part data name for plots 
+    
+    :return: B sign, weight, p(B+), event id and full auc (with untag events) 
+    """
+    # Calibration p(track/vertex same sign|B)
+    data_calib, part_probs = predict_by_estimator(estimator, datasets)
+    part_probs_calib = calibrate_probs(data_calib.label.values, data_calib.N_sig_sw.values, part_probs, 
+                                       logistic=logistic)
+    plt.figure(figsize=[18, 5])
+    plt.subplot(1,3,1)
+    plt.hist(part_probs[data_calib.label.values == 0], bins=60, normed=True, alpha=0.3, label='os')
+    plt.hist(part_probs[data_calib.label.values == 1], bins=60, normed=True, alpha=0.3, label='ss')
+    plt.legend(), plt.title('{} probs'.format(part_name))
+    
+    plt.subplot(1,3,2)
+    plt.hist(part_probs_calib[data_calib.label.values == 0], bins=60, normed=True, alpha=0.3, label='os')
+    plt.hist(part_probs_calib[data_calib.label.values == 1], bins=60, normed=True, alpha=0.3, label='ss')
+    plt.legend(), plt.title('{} probs calibrated'.format(part_name))
+        
+    all_events = get_events_statistics(data_calib)['Events']
+    
+    # Compute p(B+)
+    Bsign, Bweight, Bprob, Bevent = compute_B_prob_using_part_prob(data_calib, part_probs_calib, 
+                                                                   sign_part_column=sign_part_column)
+    
+    plt.subplot(1,3,3)
+    plt.hist(Bprob[numpy.array(Bsign) == -1], bins=60, normed=True, alpha=0.3, label='$B^-$')
+    plt.hist(Bprob[numpy.array(Bsign) == 1], bins=60, normed=True, alpha=0.3, label='$B^+$')
+    plt.legend(), plt.title('B probs'), plt.show()
+    assert all_events == len(Bprob), '{}, {}'.format(all_events, Bprob)
+    
+    auc, auc_full = calculate_auc_with_and_without_untag_events(Bsign, Bprob, Bweight)
+    print 'AUC for tagged:', auc, 'AUC with untag:', auc_full
+    return Bsign, Bweight, Bprob, Bevent, auc_full
+
+
+def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficiency_delta, estimator,
+                                             datasets, name, logistic=True, n_calibrations=30,
+                                             sign_part_column='signTrack', part_name='track'):
+    """
+    Predict probabilities for event parts, calibrate it, compute B data and estimate with bootstrap (calibration p(B+)) D2
+    
+    :param tagging_efficiency: float, which part of samples will be tagged
+    :param tagging_efficiency_delta: standard error of efficiency
+    :param estimator: REP classifier, already trained model.
+    :param datasets: list of pandas.DataFrames to predict.
+    :param name: str, name of model
+    :param logistic: bool, use logistic or isotonic regression for part (track/vertex) probabilities calibration
+    :param sign_part_column: column for part sign in data
+    :param part_name: part data name for plots 
+    
+    :return: pandas.DataFrame with only one row, describing result_table
+    """
+    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
+                                                                        sign_part_column=sign_part_column, 
+                                                                        part_name=part_name)    
+    # Compute p(B+) calibrated with bootstrap
+    D2, aucs = bootstrap_calibrate_prob(Bsign, Bweight, Bprob, n_calibrations=30)
+    print 'mean AUC after calibration:', numpy.mean(aucs), numpy.var(aucs)
+    return result_table(tagging_efficiency, tagging_efficiency_delta, D2, auc_full, name)
+
+
+def prepare_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_column='signTrack', part_name='track'):
+    """
+    Prepare B data for event parts (track/vetex) for further combination of track-based and vertex-based taggers:
+    predict probabilities for event parts, calibrate it, compute B data and p(B+) / (1 - p(B+)) (see formula in description) 
+    
+    :param estimator: REP classifier, already trained model.
+    :param datasets: list of pandas.DataFrames to predict.
+    :param name: str, name of model
+    :param logistic: bool, use logistic or isotonic regression for part (track/vertex) probabilities calibration
+    :param sign_part_column: column for part sign in data
+    :param part_name: part data name for plots 
+    
+    :return: pandas.DataFrame with keys: `event_id` - B id, `Bweight` - B weight, `{part_name}_relation_prob` p(B+) / (1 - p(B+)) for given part, `Bsign` - sign B
+    """
+    
+    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
+                                                                        sign_part_column=sign_part_column, 
+                                                                        part_name=part_name)    
+    # Roc curve
+    fpr, tpr, _ = roc_curve(Bsign, Bprob, sample_weight=Bweight)
+    plt.plot(fpr, tpr)
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.ylim(0, 1), plt.xlim(0, 1), plt.show()
+    Bdata_prepared = pandas.DataFrame({'event_id': Bevent, 
+                                       'Bweight': Bweight, 
+                                       '{}_relation_prob'.format(part_name): Bprob / (1. - Bprob),
+                                       'Bsign': Bsign})
+    return Bdata_prepared
+
