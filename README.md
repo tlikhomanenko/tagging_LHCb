@@ -14,25 +14,16 @@ LHCb opposite side (OS) B-tagging algorithms upgrading
 
 ## LHCb new B OS-tagging
 
-* tracking tagger
+* tracking inclusive tagger
 * vertex tagger
-* union of traking and vertex tagger
+* union of tracking and vertex tagger
 * isotonic calibration
-
-
-### Tracking tagger 
-* define `label` = `signB` * `signTrack`
-
-
-## Data
-
-## Features:
 
 ## Results
 
-## Reproducibility
+All analysis scheme is presented [here](https://github.com/tata-antares/tagging_LHCb/blob/master/Analysis-scheme.ipynb)
 
 ## Requirements
-* [rep](http://github.com/yandex/rep) 0.6.3
+* [rep](https://github.com/yandex/rep) 0.6.3
 * [rep_ef](https://github.com/anaderi/REP_EF) 0.6.2
 * [hep_ml](https://github.com/arogozhnikov/hep_ml) 0.3.0
