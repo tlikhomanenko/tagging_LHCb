@@ -152,7 +152,7 @@ def result_table(tagging_efficiency, tagging_efficiency_delta, D2, auc, name='mo
     return pandas.DataFrame(result)
 
 
-def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, threshold=0.):
+def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, threshold=0., return_calibrator=False):
     """
     Calibrate output to probabilities using 2-folding to calibrate all data
     
@@ -191,7 +191,10 @@ def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, thr
     else:
         calibrated_probs[ind_1] = est_calib_2.transform(probs_1)
         calibrated_probs[ind_2] = est_calib_1.transform(probs_2)
-    return calibrated_probs
+    if return_calibrator:
+        return calibrated_probs, (est_calib_1, est_calib_2)
+    else:
+        return calibrated_probs
 
 
 def calculate_auc_with_and_without_untag_events(Bsign, Bprobs, Bweights):
