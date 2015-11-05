@@ -71,7 +71,7 @@ def plot_flattened_probs(probs, labels, weights, label=1, check_input=True):
     return flattener
 
 
-def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, group_column=None, threshold=0.):
+def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, group_column=None, threshold=0., symmetrize=False):
     """
     Bootstrap isotonic calibration: 
      * randomly divide data into train-test
@@ -82,6 +82,7 @@ def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, group_co
     :param labels: numpy.array of shape [n_samples] with labels 
     :param weights: numpy.array of shape [n_samples]
     :param threshold: float, to set labels 0/1 
+    :param symmetrize: bool, do symmetric calibration, ex. for B+, B-
     
     :return: D2 array and auc array
     """
@@ -97,7 +98,13 @@ def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, group_co
             train_probs, test_probs, train_labels, test_labels, train_weights, test_weights = train_test_split(
                 probs, labels, weights, train_size=0.5)
         iso_est = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
-        iso_est.fit(train_probs, train_labels, train_weights)
+        if symmetrize:
+            iso_est.fit(numpy.r_[train_probs, 1-train_probs], 
+                        numpy.r_[train_labels > 0, train_labels <= 0],
+                        numpy.r_[train_weights, train_weights])
+        else:
+            iso_est.fit(train_probs, train_labels, train_weights)
+            
         probs_calib = iso_est.transform(test_probs)
         alpha = (1 - 2 * probs_calib) ** 2
         aucs.append(roc_auc_score(test_labels, test_probs, sample_weight=test_weights))
@@ -152,7 +159,7 @@ def result_table(tagging_efficiency, tagging_efficiency_delta, D2, auc, name='mo
     return pandas.DataFrame(result)
 
 
-def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, threshold=0., return_calibrator=False):
+def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, threshold=0., return_calibrator=False, symmetrize=False):
     """
     Calibrate output to probabilities using 2-folding to calibrate all data
     
@@ -161,7 +168,8 @@ def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, thr
     :param weights: numpy.array of shape [n_samples]
     :param threshold: float, to set labels 0/1 
     :param logistic: bool, use logistic or isotonic regression
-
+    :param symmetrize: bool, do symmetric calibration, ex. for B+, B-
+    
     :return: calibrated probabilities
     """
     labels = (labels > threshold) * 1
@@ -178,11 +186,25 @@ def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, thr
         probs_2 = numpy.clip(probs_2, 0.001, 0.999)
         probs_1 = logit(probs_1)[:, numpy.newaxis]
         probs_2 = logit(probs_2)[:, numpy.newaxis]
-        est_calib_1.fit(probs_1, labels[ind_1])
-        est_calib_2.fit(probs_2, labels[ind_2])        
+        if symmetrize:
+            est_calib_1.fit(numpy.r_[probs_1, 1-probs_1], 
+                            numpy.r_[labels[ind_1] > 0, labels[ind_1] <= 0])
+            est_calib_2.fit(numpy.r_[probs_2, 1-probs_2], 
+                            numpy.r_[labels[ind_2] > 0, labels[ind_2] <= 0])
+        else:
+            est_calib_1.fit(probs_1, labels[ind_1])
+            est_calib_2.fit(probs_2, labels[ind_2])
     else:
-        est_calib_1.fit(probs_1, labels[ind_1], weights[ind_1])
-        est_calib_2.fit(probs_2, labels[ind_2], weights[ind_2])
+        if symmetrize:
+            est_calib_1.fit(numpy.r_[probs_1, 1-probs_1], 
+                            numpy.r_[labels[ind_1] > 0, labels[ind_1] <= 0],
+                            numpy.r_[weights[ind_1], weights[ind_1]])
+            est_calib_2.fit(numpy.r_[probs_2, 1-probs_2], 
+                            numpy.r_[labels[ind_2] > 0, labels[ind_2] <= 0],
+                            numpy.r_[weights[ind_2], weights[ind_2]])
+        else:
+            est_calib_1.fit(probs_1, labels[ind_1], weights[ind_1])
+            est_calib_2.fit(probs_2, labels[ind_2], weights[ind_2])
         
     calibrated_probs = numpy.zeros(len(probs))
     if logistic:
@@ -347,3 +369,43 @@ def prepare_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_
                                        'Bsign': Bsign})
     return Bdata_prepared
 
+
+def compute_mistag(Bprobs, Bsign, Bweight, chosen, uniform=True, bins=None, label=""):
+    """
+    Check mistag calibration (plot mistag vs true mistag in bins)
+    
+    :param Bprobs: p(B+) probabilities, numpy.array of shape [n_samples]
+    :param Bsign: numpy.array of shape [n_samples] with labels {-1, 1}
+    :param Bweights: numpy.array of shape [n_samples]
+    :param chosen: condition to select B events (B+ or B- only)
+    :param uniform: bool, uniform bins or percentile in the other case
+    :params bins: bins
+    :param label: label on the plot
+    
+    """
+    if uniform:
+        bins = bins
+    else:
+        bins = numpy.percentile(numpy.minimum(Bprobs, 1 - Bprobs), bins)
+
+    prob = Bprobs[chosen]
+    sign = Bsign[chosen]
+    weight = Bweight[chosen]
+    p_mistag = numpy.minimum(prob, 1 - prob)
+    tag = numpy.where(prob >= 0.5, 1, -1)
+    is_correct = numpy.where(sign * tag > 0, 1, 0)
+    
+    bins_index = numpy.searchsorted(bins, p_mistag)
+    right_tagged = numpy.bincount(bins_index, weights=is_correct * weight)
+    wrong_tagged = numpy.bincount(bins_index, weights=(1 - is_correct) * weight)
+    p_mistag_true = wrong_tagged / (right_tagged + wrong_tagged)
+    
+    bins = [0.] + list(bins) + [0.5]
+    bins = numpy.array(bins)
+    bins_centers = (bins[1:] + bins[:-1]) / 2
+    bins_error = (bins[1:] - bins[:-1]) / 2
+    p_mistag_true_error = numpy.sqrt(wrong_tagged * right_tagged) / (wrong_tagged + right_tagged)**1.5
+    plt.errorbar(bins_centers, p_mistag_true, xerr=bins_error, yerr=p_mistag_true_error, fmt='.', label=label)
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlim(-0.05, 0.55), plt.ylim(-0.05, 0.55)
+    plt.grid()
