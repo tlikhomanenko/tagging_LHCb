@@ -1,1 +1,2 @@
-notebook/analyses/tagging_LHCb/img/eff_OS.csv
+name,"$\epsilon_{tag}, \%$","$\Delta \epsilon_{tag}, \%$",$D^2$,$\Delta D^2$,"$\epsilon, \%$","$\Delta \epsilon, \%$","AUC, with untag","$\Delta$ AUC, with untag"
+"Inclusive tagging, PID less",99.11029,0.11551,0.03808,0.00044,3.77408,0.04411,60.79013,0.0
