@@ -241,7 +241,7 @@ def calculate_auc_with_and_without_untag_events(Bsign, Bprobs, Bweights):
 
 
 def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_id_column='event_id', signB_column='signB',
-                                   sign_part_column='signTrack'):
+                                   sign_part_column='signTrack', normed_signs=False):
     """
     Compute p(B+) using probs for parts of event (tracks/vertices).
     
@@ -256,7 +256,13 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
     """
     result_event_id, data_ids = numpy.unique(data[event_id_column].values, return_inverse=True)
     log_probs = numpy.log(probs) - numpy.log(1 - probs)
-    log_probs *= data[sign_part_column].values
+    sign_weights = numpy.ones(len(log_probs))
+    if normed_signs:
+        for sign in [-1, 1]:
+            maskB = (data[signB_column].values == sign)
+            maskPart = (data[sign_part_column].values == 1)
+            sign_weights[maskB * maskPart] *= sum(maskB * (~maskPart)) * 1. /  sum(maskB * maskPart)
+    log_probs *= sign_weights * data[sign_part_column].values
     result_logprob = numpy.bincount(data_ids, weights=log_probs)
     # simply reconstructing original
     result_label = numpy.bincount(data_ids, weights=data[signB_column].values) / numpy.bincount(data_ids)
@@ -265,7 +271,7 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
 
 
 def get_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_column='signTrack', part_name='track',
-                              random_state=11):
+                              random_state=11, normed_signs=False):
     """
     Predict probabilities for event parts, calibrate it and compute B data.
     Return B data for given part of event:tracks/vertices.
@@ -297,7 +303,7 @@ def get_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_colu
     
     # Compute p(B+)
     Bsign, Bweight, Bprob, Bevent = compute_B_prob_using_part_prob(data_calib, part_probs_calib, 
-                                                                   sign_part_column=sign_part_column)
+                                                                   sign_part_column=sign_part_column, normed_signs=normed_signs)
     Bprob[~numpy.isfinite(Bprob)] = 0.5
     Bprob[numpy.isnan(Bprob)] = 0.5
     
@@ -315,7 +321,7 @@ def get_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_colu
 def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficiency_delta, estimator,
                                              datasets, name, logistic=True, n_calibrations=30,
                                              sign_part_column='signTrack', part_name='track',
-                                             random_state=11):
+                                             random_state=11, normed_signs=False):
     """
     Predict probabilities for event parts, calibrate it, compute B data and estimate with bootstrap (calibration p(B+)) D2
     
@@ -332,7 +338,8 @@ def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficie
     """
     Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
                                                                         sign_part_column=sign_part_column, 
-                                                                        part_name=part_name, random_state=random_state)    
+                                                                        part_name=part_name, random_state=random_state,
+                                                                        normed_signs=normed_signs)    
     # Compute p(B+) calibrated with bootstrap
     D2, aucs = bootstrap_calibrate_prob(Bsign, Bweight, Bprob, n_calibrations=30)
     print 'mean AUC after calibration:', numpy.mean(aucs), numpy.var(aucs)
@@ -340,7 +347,7 @@ def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficie
 
 
 def prepare_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_column='signTrack', part_name='track', 
-                                  random_state=11):
+                                  random_state=11, normed_signs=False):
     """
     Prepare B data for event parts (track/vetex) for further combination of track-based and vertex-based taggers:
     predict probabilities for event parts, calibrate it, compute B data and p(B+) / (1 - p(B+)) (see formula in description) 
@@ -357,7 +364,8 @@ def prepare_B_data_for_given_part(estimator, datasets, logistic=True, sign_part_
     
     Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
                                                                         sign_part_column=sign_part_column, 
-                                                                        part_name=part_name, random_state=random_state)    
+                                                                        part_name=part_name, random_state=random_state,
+                                                                        normed_signs=normed_signs)    
     # Roc curve
     fpr, tpr, _ = roc_curve(Bsign, Bprob, sample_weight=Bweight)
     plt.plot(fpr, tpr)
