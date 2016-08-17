@@ -18,7 +18,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 
 
 class CalibrationProcedure(BaseEstimator, ClassifierMixin):
-    def __init__(self, logistic=False, symmetrize=False, random_state=11, threshold=0.):
+    def __init__(self, logistic=False, symmetrize=False, random_state=42, threshold=0.):
         self.logistic = logistic
         self.symmetrize = symmetrize
         self.random_state = random_state
@@ -215,7 +215,7 @@ def prepare_B_data(data_with_predictions, tagger_keys):
 
 
 def run_taggers_combination(data_with_predictions, tagger_keys, N_B_events, model_name="", 
-                            random_state=13, logistic_combined=False):
+                            random_state=42, logistic_combined=False):
 
     tags, Bprobs, Bweights, Bsign = prepare_B_data(data_with_predictions, tagger_keys)
     Bprob_calibrated, calibration_B = calibrate_probs(Bsign, Bweights, Bprobs, random_state=random_state, symmetrize=True,
@@ -411,7 +411,7 @@ def result_table(tagging_efficiency, tagging_efficiency_delta, D2, auc, name='mo
     return pandas.DataFrame(result)
 
 
-def calibrate_probs(labels, weights, probs, logistic=False, random_state=11, threshold=0, symmetrize=False):
+def calibrate_probs(labels, weights, probs, logistic=False, random_state=42, threshold=0, symmetrize=False):
     """
     Calibrate output to probabilities using 2-folding to calibrate all data
     
@@ -505,7 +505,7 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
 
 
 def get_B_data_for_given_part(estimator, datasets, N_B_events, logistic=True, sign_part_column='signTrack', part_name='track',
-                              random_state=11, normed_signs=False, prior_probs=None):
+                              random_state=42, normed_signs=False, prior_probs=None):
     """
     Predict probabilities for event parts, calibrate it and compute B data.
     Return B data for given part of event:tracks/vertices.
@@ -556,7 +556,7 @@ def get_B_data_for_given_part(estimator, datasets, N_B_events, logistic=True, si
 def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficiency_delta, estimator,
                                              datasets, name, N_B_events, logistic=True, n_calibrations=30,
                                              sign_part_column='signTrack', part_name='track', symmetrize=True, 
-                                             random_state=11, normed_signs=False, logistic_combined=False):
+                                             random_state=42, normed_signs=False, logistic_combined=False):
     """
     Predict probabilities for event parts, calibrate it, compute B data and estimate with bootstrap (calibration p(B+)) D2
     
@@ -585,7 +585,7 @@ def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficie
 def estimate_quality(tagging_efficiency, tagging_efficiency_delta, estimator,
                      datasets, name, N_B_events, logistic=True,
                      sign_part_column='signTrack', part_name='track', symmetrize=True, 
-                     random_state=11, normed_signs=False, logistic_combined=False):
+                     random_state=42, normed_signs=False, logistic_combined=False):
     """
     Predict probabilities for event parts, calibrate it, compute B data and estimate with bootstrap (calibration p(B+)) D2
     
@@ -613,7 +613,7 @@ def estimate_quality(tagging_efficiency, tagging_efficiency_delta, estimator,
 
 def prepare_B_data_for_given_part(estimator, datasets, N_B_events, logistic=True,
                                   sign_part_column='signTrack', part_name='track', 
-                                  random_state=11, normed_signs=False):
+                                  random_state=42, normed_signs=False):
     """
     Prepare B data for event parts (track/vetex) for further combination of track-based and vertex-based taggers:
     predict probabilities for event parts, calibrate it, compute B data and p(B+) / (1 - p(B+)) (see formula in description) 
@@ -782,7 +782,7 @@ def estimate_algorithm(predictor, calibrator_tracks, calibrator_B, data, N_B_eve
         part_probs_calib = calibrator_tracks.predict_proba(part_prob)
     else:
         part_probs_calib, _ = calibrate_probs(data.label.values, data.N_sig_sw.values, part_prob,
-                                              logistic=True, random_state=11)
+                                              logistic=True, random_state=42)
 
     if inverse_mask is not None:
         part_probs_calib[inverse_mask] = 1 - part_probs_calib[inverse_mask]
@@ -796,7 +796,7 @@ def estimate_algorithm(predictor, calibrator_tracks, calibrator_B, data, N_B_eve
     if not calib_itself:
         Bprobs_calib = calibrator_B.predict_proba(part_prob)
     else:
-        Bprobs_calib, _ = calibrate_probs(Bsign, Bweight, Bprob, symmetrize=True, random_state=11, logistic=True)
+        Bprobs_calib, _ = calibrate_probs(Bsign, Bweight, Bprob, symmetrize=True, random_state=42, logistic=True)
 
     D2 = numpy.average((1 - 2 * Bprobs_calib) ** 2, weights=Bweight)
     auc, auc_full = calculate_auc_with_and_without_untag_events(Bsign, Bprob, Bweight, N_B_events)
