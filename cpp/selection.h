@@ -532,7 +532,7 @@ public :
    virtual Int_t    GetEntry(Long64_t entry);
    virtual Long64_t LoadTree(Long64_t entry);
    virtual void     Init(TTree *tree);
-   virtual void     Loop(TString decay);
+   virtual void     Loop(TString decay, TString year, TString datamc);
    virtual Bool_t   Notify();
    virtual void     Show(Long64_t entry = -1); 
    TLorentzVector build4V(double p, double pt, double phi, double ID);

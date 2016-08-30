@@ -8,10 +8,12 @@
 #include <TLorentzVector.h>
 #include <iomanip>  
 #include <TMath.h>
+#include <cstdlib>
+
 
 using namespace std;
 
-void selection::Loop(TString decay)
+void selection::Loop(TString decay, TString year, TString datamc)
 {
 
 //   cleanup cuts
@@ -22,25 +24,35 @@ void selection::Loop(TString decay)
 
    Long64_t nentries = fChain->GetEntriesFast();
 
-   TString outFile_name1 = "datasets/MC/csv/"+decay+"/";
+   TString outFile_name1 = "datasets/"+datamc+"/csv/WG/"+decay+"/"+year+"/";
+   std::system("mkdir -p "+outFile_name1);
+//   TString outFile_name1 = "datasets/MC/csv/"+decay+"/";
 //   TString outFile_name1 = "./";
    TString outFile_name2 = outFile_name1;
    TString outFile_name3 = outFile_name2;
    TString outFile_name4 = outFile_name3;
+   TString outFile_name5 = outFile_name4;
    outFile_name1 = outFile_name1 + "Tracks.csv";
    outFile_name2 = outFile_name2 + "Vertices.csv";
    outFile_name3 = outFile_name3 + "Vertices_Tracks.csv";
    outFile_name4 = outFile_name4 + "Vertices_Mike.csv";
+   outFile_name5 = outFile_name5 + "Mass.csv";
+   cout<<"Writing to "<<outFile_name1<<endl;
    ofstream outFile1; outFile1.open(outFile_name1);
    ofstream outFile2; outFile2.open(outFile_name2);
    ofstream outFile3; outFile3.open(outFile_name3);
    ofstream outFile4; outFile4.open(outFile_name4);
+   ofstream outFile5; outFile5.open(outFile_name5);
 
-   outFile1<<"run\tevent\tBmass\ti\tmult\tpartP\tpartPt\tptB\tIPs\tIP\tIPerr\tpartlcs\tEOverP\tghostProb\tIPPU\tnnkrec\tPIDNNk\tPIDNNpi\tPIDNNp\tPIDNNm\tPIDNNe\tdiff_eta\tdiff_phi\tphi\teta\tproj\tID\tveloch\tsignB\tsignTrack\tDist_phi\tN_sig_sw\tmu_cut\te_cut\tK_cut\tMCID\tOS_SS\txFlag\tK_MCID\tBOosc"<<endl;
-   outFile2<<"run\tevent\tNo\tmult\tnnkrec\tBmass\tptB\tvflag\tptmean\tipsmean\tvcharge\tsvm\tsvp\tBDphiDir\tsvtau\tdocamax\tsignB\tsignVtx\tN_sig_sw\tmassSeed\tpt1\tpt2\tips1\tips2\tphi1\tphi2\tghost1\tghost2\tpointtheta\tseedchi2\trdist\tprobf\tv_cut\tBOosc"<<endl;
+
+   outFile1<<"run\tevent\tBmass\ttime\ti\tmult\tpartP\tpartPt\tptB\tIPs\tIP\tIPerr\tpartlcs\tEOverP\tghostProb\tIPPU\tnnkrec\tPIDNNk\tPIDNNpi\tPIDNNp\tPIDNNm\tPIDNNe\tdiff_eta\tdiff_phi\tphi\teta\tproj\tID\tveloch\tsignB\tsignTrack\tDist_phi\tN_sig_sw\tmu_cut\te_cut\tK_cut\tMCID\tOS_SS\txFlag\tK_MCID\tBOosc"<<endl;
+   outFile2<<"run\tevent\tNo\tmult\tnnkrec\tBmass\ttime\tptB\tvflag\tptmean\tipsmean\tvcharge\tsvm\tsvp\tBDphiDir\tsvtau\tdocamax\tsignB\tsignVtx\tN_sig_sw\tmassSeed\tpt1\tpt2\tips1\tips2\tphi1\tphi2\tghost1\tghost2\tpointtheta\tseedchi2\trdist\tprobf\tv_cut\tBOosc"<<endl;
    outFile3<<"run\tevent\tBmass\tvertex\ti\tmult\tpartP\tpartPt\tptB\tIPs\tIP\tIPerr\tpartlcs\tEOverP\tghostProb\tIPPU\tnnkrec\tPIDNNk\tPIDNNpi\tPIDNNp\tPIDNNm\tPIDNNe\tdiff_eta\tdiff_phi\tphi\teta\tproj\tID\tveloch\tsignB\tsignTrack\tN_sig_sw\tmu_cut\te_cut\tK_cut\tseed\tBOosc"<<endl;
 
    outFile4<<"run\tevent\tNo\tmult\tnnkrec\tBmass\tptB\tvflag\tptmean\tipsmean\tvcharge\tsvm\tsvp\tM_BDphiDir\tW_M_BDphiDir\tM_svtau\tW_M_svtau\tM_pointtheta\tW_M_pointtheta\tdocamax\tsignB\tsignVtx\tN_sig_sw\tBOosc"<<endl;
+
+
+
 
    Long64_t nb = 0;
    int muon_counter = 0;
@@ -65,10 +77,11 @@ void selection::Loop(TString decay)
      Long64_t ientry = LoadTree(jentry);
      if (ientry < 0) break;
      nb = fChain->GetEntry(jentry);
-     if(bkgCat!=0) continue;
+     if(datamc=="MC"&&bkgCat!=0) continue;
 //      cout<<"=================================="<<endl;
 //      cout<<"event "<<jentry<<endl;
 //      cout<<fixed<<setprecision(0)<<"run = "<<run<<" event = "<<event<<setprecision(2)<<" multiplicity : "<<N<<endl;
+     outFile5<<fixed<<setprecision(8)<<run<<"\t"<<event<<"\t"<<Bmass<<endl;
      double B_eta = 0.;
      double B_phi = 0.;
      double ptB = 0.;
@@ -548,7 +561,7 @@ void selection::Loop(TString decay)
                                }
                                int K_MCbid = abs(int(sMCID[ii]));
                                if(K_MCbid==321) {
-                                  K_MC_ID = sMCID[ii]/K_MCbid*BOosc;
+                                  K_MC_ID = sMCID[ii]/K_MCbid;
                                }
                                if(sP[ii] == P[i] && sPt[ii]==Pt[i]){
 					cout<<"wrong"<<endl;
@@ -645,8 +658,9 @@ void selection::Loop(TString decay)
  */
                           outFile1<<setprecision(8)<<fixed<<
                                                             run<<"\t"<<
-                                                            (Long64_t) event<<"\t"<<
+                                                            event<<"\t"<<
                                                             Bmass<<"\t"<<
+                                                            tau<<"\t"<<
                                                             i<<"\t"<<
                                                             (int) N<<"\t"<<
                                                             P[i]<<"\t"<<
@@ -713,14 +727,10 @@ void selection::Loop(TString decay)
            		double seedchi2 =-1, ptmin=-1, ipmax = -999, ipsmin = -999, rdist = -99;
            		double prob_ptmin = -1, prob_ipmax = -1, prob_ipsmin = -1, prob_deltaphi=-1, prob_rdist=-1, prob_pointtheta =-1, prob_chi2=-1;
            		for ( int i=0; i< N; i++ ) {
-                		if(!vFlag[i]){
-                        		continue;
-                		}else{
                         		if(SecVtx_pt1[j]==Pt[i]) {iSeed1=i; }
                         		if(SecVtx_pt2[j]==Pt[i]) {iSeed2=i; }
-                		}
 
-           		}
+           		}//shit
            		if(iSeed1==-1 || iSeed2 == -1) continue;
               		
 //			cout<<"iSeed1 = "<<iSeed1<<" iSeed2 = "<<iSeed2<<endl;
@@ -799,7 +809,7 @@ void selection::Loop(TString decay)
 
 
                                        outFile3<<setprecision(8)<<fixed<<run<<"\t"<<
-                                                            (Long64_t)  event<<"\t"<<
+                                                            event<<"\t"<<
                                                             Bmass<<"\t"<<
                                                             j<<"\t"<<i<<"\t"<<
                                                             N<<"\t"<<
@@ -854,12 +864,13 @@ void selection::Loop(TString decay)
                 int vv = j == v_vtx_max?1:0;
 
 
-                           outFile2<<run<<"\t"<<
-                                    (Long64_t) event<<"\t"<<
+                           outFile2<<setprecision(8)<<fixed<<run<<"\t"<<
+                                    event<<"\t"<<
                                     j<<"\t"<<
                                     N<<"\t"<<
                                     krec<<"\t"<<
                                     Bmass<<"\t"<<
+                                    tau<<"\t"<<
                                     ptB<<"\t"<<
                                     vflagged<<"\t"<<
                                     Vptmean<<"\t"<<
@@ -999,8 +1010,8 @@ void selection::Loop(TString decay)
 
 
 
-                           outFile4<<run<<"\t"<<
-                                    (Long64_t) event<<"\t"<<
+		   outFile4<<setprecision(8)<<fixed<<run<<"\t"<<
+                                    event<<"\t"<<
                                     seed_c<<"\t"<<
                                     seed_collector.size()<<"\t"<<
                                     krec<<"\t"<<
