@@ -196,6 +196,9 @@ def prepare_B_data(data_with_predictions, tagger_keys):
     data_combined = pandas.DataFrame({'event_id': numpy.unique(numpy.concatenate([d.index.values for d in 
                                                                                   data_with_predictions.values()]))})
     data_combined.index = data_combined.event_id
+    
+    mask_mass_time = False
+    
     for key in tagger_keys:
         data_combined['prob_{}'.format(key)] = 0.5
         data_combined['tag_{}'.format(key)] = 1
@@ -204,6 +207,11 @@ def prepare_B_data(data_with_predictions, tagger_keys):
         data_combined.ix[d.index, 'tag_{}'.format(key)] = d['tag_{}'.format(key)]
         data_combined.ix[d.index, 'weight'] = d['weight']
         data_combined.ix[d.index, 'signB'] = d['signB']
+        br = set(d.columns)
+        if 'mass' in br and 'time' in br:
+            data_combined.ix[d.index, 'time'] = d['time']
+            data_combined.ix[d.index, 'mass'] = d['mass']
+            mask_mass_time = True
     # getting predictions    
     tags, Bprobs, Bweights, Bsign = combine_taggers(data_combined, tagger_keys)
     mask = ~numpy.isnan(Bprobs)
@@ -211,7 +219,10 @@ def prepare_B_data(data_with_predictions, tagger_keys):
     Bweights = Bweights[mask]
     Bsign = Bsign[mask]
     Bprobs = Bprobs[mask]
-    return tags, Bprobs, Bweights, Bsign
+    if mask_mass_time:
+        return tags, Bprobs, Bweights, Bsign, data_combined.mass.values, data_combined.time.values
+    else:
+        return tags, Bprobs, Bweights, Bsign
 
 
 def run_taggers_combination(data_with_predictions, tagger_keys, N_B_events, model_name="", 
@@ -364,7 +375,7 @@ def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, threshol
     return D2_array, aucs
 
 
-def predict_by_estimator(estimator, datasets):
+def predict_by_estimator(estimator, datasets, features=None):
     '''
     Predict data by classifier
     Important note: this also works correctly if classifier is FoldingClassifier and one of dataframes is his training data.
@@ -374,7 +385,10 @@ def predict_by_estimator(estimator, datasets):
         
     :return: data, probabilities
     '''     
-    data = pandas.concat(datasets)    
+    if features is None:
+        data = pandas.concat(datasets)
+    else:
+        data = pandas.concat([data[features] for data in datasets])    
     # predicting each DataFrame separately to preserve FoldingClassifier
     probs = numpy.concatenate([estimator.predict_proba(dataset)[:, 1] for dataset in datasets])
     return data, probs
@@ -495,7 +509,7 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
         for sign in [-1, 1]:
             maskB = (data[signB_column].values == sign)
             maskPart = (data[sign_part_column].values == 1)
-            sign_weights[maskB * maskPart] *= sum(maskB * (~maskPart)) * 1. /  sum(maskB * maskPart)
+            sign_weights[maskB * maskPart] = sum(maskB * (~maskPart)) * 1. /  sum(maskB * maskPart)
     log_probs *= sign_weights * data[sign_part_column].values
     result_logprob = numpy.bincount(data_ids, weights=log_probs)
     # simply reconstructing original
@@ -504,7 +518,7 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
     return result_label, result_weight, expit(result_logprob), result_event_id
 
 
-def get_B_data_for_given_part(estimator, datasets, N_B_events, logistic=True, sign_part_column='signTrack', part_name='track',
+def get_B_data_for_given_part(part_probs, data_calib, N_B_events, logistic=True, sign_part_column='signTrack', part_name='track',
                               random_state=42, normed_signs=False, prior_probs=None):
     """
     Predict probabilities for event parts, calibrate it and compute B data.
@@ -519,7 +533,6 @@ def get_B_data_for_given_part(estimator, datasets, N_B_events, logistic=True, si
     :return: B sign, weight, p(B+), event id and full auc (with untag events) 
     """
     # Calibration p(track/vertex same sign|B)
-    data_calib, part_probs = predict_by_estimator(estimator, datasets)
     part_probs_calib, calibration = calibrate_probs(data_calib.label.values, data_calib.N_sig_sw.values, part_probs, 
                                                     logistic=logistic, random_state=random_state)
     plt.figure(figsize=[18, 5])
@@ -773,46 +786,57 @@ def plot_calibration(p, labels, bins=[10, 20, 30, 40, 50, 60, 70, 80, 90], weigh
     plt.ylabel('true probability')
     
     
-def estimate_algorithm(predictor, calibrator_tracks, calibrator_B, data, N_B_events, calib_itself=False,
-                       calib_part_itself=False, inverse_mask=None):   
-    part_prob = predictor.predict_proba(data)[:, 1]
-
-    if not calib_part_itself:
+def estimate_channel(part_prob, data, N_B_events, name="", calibrator_tracks=None, calibrator_B=None, 
+                     logistic=False, prior=None, mask_to_invert=None):       
+    print "Calibrate tracks"
+    if calibrator_tracks is not None:
         # calibrate parts predictions
         part_probs_calib = calibrator_tracks.predict_proba(part_prob)
     else:
         part_probs_calib, _ = calibrate_probs(data.label.values, data.N_sig_sw.values, part_prob,
-                                              logistic=True, random_state=42)
-
-    if inverse_mask is not None:
-        part_probs_calib[inverse_mask] = 1 - part_probs_calib[inverse_mask]
+                                              logistic=True, random_state=13)
+    if prior is not None:
+        part_probs_calib = prior*(1 - part_probs_calib) + (1-prior)*part_probs_calib
+    if mask_to_invert is not None:
+        part_probs_calib[mask_to_invert] = 1 - part_probs_calib[mask_to_invert]
         
-    print roc_auc_score(data.signB.values * data.signTrack.values > 0, part_prob, sample_weight=data.N_sig_sw.values.astype(numpy.float64)),
-    print roc_auc_score(data.signB.values * data.signTrack.values > 0, part_probs_calib, sample_weight=data.N_sig_sw.values.astype(numpy.float64))
-    plot_calibration(part_probs_calib, data.label, weight=data.N_sig_sw)
+    print 'tracks AUC', roc_auc_score(data.signB.values * data.signTrack.values > 0, part_prob),
+    print 'calibrated tracks AUC', roc_auc_score(data.signB.values * data.signTrack.values > 0, part_probs_calib)
+    
+    plt.hist(part_probs_calib[data.label.values == 0], bins=60, alpha=0.5, normed=True)
+    plt.hist(part_probs_calib[data.label.values == 1], bins=60, alpha=0.5, normed=True)
+    plt.show()
+    plot_calibration(part_probs_calib, data.label)
 
     # Compute p(B+)
-    Bsign, Bweight, Bprob, Bevent = compute_B_prob_using_part_prob(data, part_probs_calib, sign_part_column='signTrack')
-    if not calib_itself:
-        Bprobs_calib = calibrator_B.predict_proba(part_prob)
+    Bsign, Bweight, Bprobs, Bevent = compute_B_prob_using_part_prob(data, part_probs_calib, 
+                                                                    sign_part_column='signTrack')
+    print "Calibrate B"
+    if calibrator_B is not None:        
+        Bprobs_calib = calibrator_B.predict_proba(Bprobs)
     else:
-        Bprobs_calib, _ = calibrate_probs(Bsign, Bweight, Bprob, symmetrize=True, random_state=42, logistic=True)
+        Bprobs_calib, _ = calibrate_probs(Bsign, Bweight, Bprobs, symmetrize=True, logistic=logistic)
 
-    D2 = numpy.average((1 - 2 * Bprobs_calib) ** 2, weights=Bweight)
-    auc, auc_full = calculate_auc_with_and_without_untag_events(Bsign, Bprob, Bweight, N_B_events)
-    print 'without calibration', auc, auc_full
+    alpha = (1 - 2 * Bprobs) ** 2
+    print 'dilution, without B calibration', numpy.average(alpha, weights=Bweight)
+    
+    alpha = (1 - 2 * Bprobs_calib) ** 2
+    D2 = [numpy.average(alpha, weights=Bweight)]
+    
+    auc, auc_full = calculate_auc_with_and_without_untag_events(Bsign, Bprobs, Bweight, N_B_events)
+    print 'B AUC, without calibration', auc, auc_full
     auc, auc_full = calculate_auc_with_and_without_untag_events(Bsign, Bprobs_calib, Bweight, N_B_events)
-    print 'with calibration', auc, auc_full
+    print 'B AUC, with calibration', auc, auc_full
     
     plt.figure(figsize=(18, 6))
     plt.subplot(1, 2, 1)
-    plt.hist(Bprob[Bsign == 1], weights=Bweight[Bsign == 1], bins=80, alpha=0.2, 
+    plt.hist(Bprobs[Bsign == 1], weights=Bweight[Bsign == 1], bins=80, alpha=0.2, 
          normed=True, range=(0, 1), label='$B^+$')
-    plt.hist(Bprob[Bsign == -1], weights=Bweight[Bsign == -1], bins=80, alpha=0.2,
+    plt.hist(Bprobs[Bsign == -1], weights=Bweight[Bsign == -1], bins=80, alpha=0.2,
          normed=True, range=(0, 1), label='$B^-$')
     plt.legend()
     plt.subplot(1, 2, 2)    
-    plt.hist(Bprobs_calib[Bsign == 1],weights=Bweight[Bsign == 1], bins=80, alpha=0.2, 
+    plt.hist(Bprobs_calib[Bsign == 1], weights=Bweight[Bsign == 1], bins=80, alpha=0.2, 
          normed=True, range=(0, 1), label='$B^+$')
     plt.hist(Bprobs_calib[Bsign == -1], weights=Bweight[Bsign == -1], bins=80, alpha=0.2,
          normed=True, range=(0, 1), label='$B^-$')
@@ -821,9 +845,9 @@ def estimate_algorithm(predictor, calibrator_tracks, calibrator_B, data, N_B_eve
     plt.figure(figsize=(18, 6))
     bins = [10, 20, 30, 40, 50, 60, 70, 80, 90]
     plt.subplot(1, 2, 1)
-    compute_mistag(Bprob, Bsign, Bweight, Bsign > -100, label="$B$", bins=bins, uniform=False)
-    compute_mistag(Bprob, Bsign, Bweight, Bsign == 1, label="$B^+$", bins=bins, uniform=False)
-    compute_mistag(Bprob, Bsign, Bweight, Bsign == -1, label="$B^-$", bins=bins, uniform=False)
+    compute_mistag(Bprobs, Bsign, Bweight, Bsign > -100, label="$B$", bins=bins, uniform=False)
+    compute_mistag(Bprobs, Bsign, Bweight, Bsign == 1, label="$B^+$", bins=bins, uniform=False)
+    compute_mistag(Bprobs, Bsign, Bweight, Bsign == -1, label="$B^-$", bins=bins, uniform=False)
     plt.legend(loc='best')
     plt.xlabel('mistag probability'), plt.ylabel('true mistag probability')
     plt.subplot(1, 2, 2)
@@ -836,4 +860,4 @@ def estimate_algorithm(predictor, calibrator_tracks, calibrator_B, data, N_B_eve
     tagging_efficiency = sum(Bweight) / N_B_events
     tagging_efficiency_delta = numpy.sqrt(sum(Bweight)) / N_B_events
     
-    return result_table(tagging_efficiency, tagging_efficiency_delta, [D2], [auc_full], 'inclusive')
+    return result_table(tagging_efficiency, tagging_efficiency_delta, D2, [auc_full], name)
