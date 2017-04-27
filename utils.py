@@ -1,3 +1,7 @@
+"""
+B sign denotes quark type (b or anti-b): label +1 corresponds to anti-b quark and -1 correspond to b-quark.
+"""
+
 import numpy
 import pandas
 from collections import OrderedDict
@@ -11,14 +15,95 @@ from matplotlib import pyplot as plt
 from rep.utils import train_test_split, train_test_split_group, Flattener
 from scipy.special import logit, expit
 from matplotlib import pyplot as plt
-from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_curve, roc_auc_score
 import root_numpy
-
+from itertools import combinations
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 
+def data_tracks_preprocessing(data, event_id_column='event_id', N_sig_sw=None):
+    """
+    Initial preprocessing for tracks: 
+    * initially remove NAN samples by IPs filtering (they are not used in efficiency tag calculation
+    * add event_id, set weight (to 1 if MC), add maxpt-pt, max(PID1, PID2), sum(PID1, PID2), cos phi
+    * apply selections, ghost probability < 0.4 and at least one PID > 0
+    * add label if B and track have the same sign
+    """
+    # remove NAN smaples
+    data.loc[data.IPs == numpy.inf, "IPs"] = numpy.NAN
+    data = data.dropna()
+#    data = data.loc[numpy.isfinite(data.IPs), :]
+    data.index = numpy.arange(len(data))
+    event_id = data.run.apply(str) + '_' + data.event.apply(int).apply(str)
+    data.loc[:, 'group_column'] = numpy.unique(event_id, return_inverse=True)[1]
+    data.loc[:, event_id_column] = event_id
+    # all weights are 1, because this is MC
+    if N_sig_sw is None:
+        data.loc[:, 'N_sig_sw'] = 1
+
+    print 'Initial statistics:', get_events_statistics(data)
+    add_diff_pt(data)
+    # add cos(diff_phi)
+    data.loc[:, 'cos_diff_phi'] = numpy.cos(data.diff_phi.values)
+    PIDs = {'k': data.PIDNNk.values,
+            'e': data.PIDNNe.values,
+            'mu': data.PIDNNm.values,
+           }
+    for (pid_name1, pid_values1), (pid_name2, pid_values2) in combinations(PIDs.items(), 2):
+        data.loc[:, 'max_PID_{}_{}'.format(pid_name1, pid_name2)] = numpy.maximum(pid_values1, pid_values2)
+        data.loc[:, 'sum_PID_{}_{}'.format(pid_name1, pid_name2)] = pid_values1 + pid_values2
+    data.loc[:, 'label'] = data.signB.values * data.signTrack.values > 0
+    
+    # preselections
+    # ghost tracks remove
+    ghost_cut = '(ghostProb < 0.4)'
+    data = data.query(ghost_cut)
+    print 'after ', ghost_cut, ' selection, statistics:', get_events_statistics(data)
+    # loose preselection on PID
+    threshold_kaon = 0.
+    threshold_muon = 0.
+    threshold_electron = 0.
+    threshold_pion = 0.
+    threshold_proton = 0.
+    pid_cut = " ( (PIDNNk > {trk}) | (PIDNNm > {trm}) | (PIDNNe > {tre}) | (PIDNNpi > {trpi}) | (PIDNNp > {trp})) "
+    pid_cut = pid_cut.format(trk=threshold_kaon, trm=threshold_muon, tre=threshold_electron, trpi=threshold_pion, 
+                             trp=threshold_proton)
+    data = data.query(pid_cut)
+    print 'after ', pid_cut, ' selection, statistics:', get_events_statistics(data)
+    return data
+    
+    
+def plot_features(data, features):
+    """
+    plot features distribution in data separately for classes (`label` column is expected in the data)
+    """
+    for n, f in enumerate(features):
+        plt.subplot(numpy.ceil(len(features) / 5.), 5, n+1)
+        mask = data[f].values > -999
+        mask_label = data.label == 1
+        x1 = max(numpy.min(data.loc[mask & mask_label, f]), numpy.min(data.loc[mask & ~mask_label, f]))
+        x2 = min(numpy.max(data.loc[mask & mask_label, f]), numpy.max(data.loc[mask & ~mask_label, f]))
+        plt.hist(data.loc[mask & mask_label, f].values, bins=80, alpha=0.3, normed=True, 
+                 weights=data.loc[mask & mask_label, 'N_sig_sw'].values, range=(x1, x2), label='positive')
+        plt.hist(data.loc[mask & ~mask_label, f].values, bins=80, alpha=0.3, normed=True, 
+                 weights=data.loc[mask & ~mask_label, 'N_sig_sw'].values, range=(x1, x2), label='negative')
+        plt.xlabel(f)
+        plt.title('%1.5f' % roc_auc_score(data.label, data[f], sample_weight=data.N_sig_sw))
+        plt.legend()
+        
+    
 class CalibrationProcedure(BaseEstimator, ClassifierMixin):
+    """
+    Calibration class: implements 2-folds calibration with calibration procedures
+    * logistic regression 
+    * isotonic regression
+    """
     def __init__(self, logistic=False, symmetrize=False, random_state=42, threshold=0.):
+        """
+        :param bool logistic: logistic regression (for True) or isotonic regression (for False) will be used
+        :param bool symmetrize: symmetrize samples or not. If True then add inverse predictions with inverse labels
+        :param float threshold: threshold for lables: y > threshold is 1 class and y <= threshold is 0 class.
+        """
         self.logistic = logistic
         self.symmetrize = symmetrize
         self.random_state = random_state
@@ -30,6 +115,9 @@ class CalibrationProcedure(BaseEstimator, ClassifierMixin):
         return ind_1, ind_2
             
     def fit(self, X, y, sample_weight=None):
+        """
+        Train calibration rule for input probabilities `X` with target values `y`
+        """
         labels = (y > self.threshold) * 1
         probs = X
         weights = numpy.ones(len(probs)) if sample_weight is None else sample_weight
@@ -71,6 +159,9 @@ class CalibrationProcedure(BaseEstimator, ClassifierMixin):
         return self
 
     def predict_proba(self, X):
+        """
+        Predict calibrated probabilities for input probabilities `X`
+        """
         probs = X
         calibrated_probs = numpy.zeros(len(probs))
         ind_1, ind_2 = self._compute_inds(len(probs))
@@ -101,14 +192,6 @@ def shrink_floats(data):
             data[column] = data[column].astype('int32')
             
             
-def shrink_floats_xgb(data):
-    for column in data.columns:
-        if data[column].dtype == 'float32':
-            data[column] = data[column].astype('float')
-        if data[column].dtype == 'int32':
-            data[column] = data[column].astype('int')
-            
-
 def union(*arrays):
     return numpy.concatenate(arrays)
 
@@ -128,6 +211,7 @@ def get_events_number(data, id_column='event_id'):
     weights = numpy.bincount(data_ids, weights=data.N_sig_sw) / numpy.bincount(data_ids)
     return numpy.sum(weights)
 
+
 def get_N_B_events():
     '''
     :return: number of B decays (sum of sWeight in initial root file) 
@@ -136,27 +220,34 @@ def get_N_B_events():
     return N_B_decays
 
 
-def compute_N_B_events_MC(track_file, vertex_file, name=""):    
+def compute_N_B_events_MC(track_file, vertex_file, name=""):   
+    """
+    Compute number of events in the generated MC files. Initially, remove samples with NAN IPs
+    """
     Bevents_tracks = pandas.DataFrame(root_numpy.root2array(track_file, branches=['run', 'event', 'IPs']))
-    Bevents_tracks = Bevents_tracks.ix[numpy.isfinite(Bevents_tracks.IPs), :]
+    Bevents_tracks = Bevents_tracks.loc[numpy.isfinite(Bevents_tracks.IPs), :]
     B_events_vertices = pandas.DataFrame(root_numpy.root2array(vertex_file, branches=['run', 'event', 'vcharge']))
     B_events_vertices = B_events_vertices[B_events_vertices.vcharge > 0]
     B_events = pandas.concat([Bevents_tracks, B_events_vertices])
 
-    B_events['event_id'] = B_events.run.apply(str) + '_' + B_events.event.apply(str)
+    B_events['event_id'] = B_events.run.apply(str) + '_' + B_events.event.apply(int).apply(str)
     B_events['N_sig_sw'] = 1
     N_B_events = get_events_number(B_events)
     return N_B_events
 
         
-# add difference between max pt in event and pt for each track
 def add_diff_pt(data, event_id_column='event_id'):
+    """
+    add difference between max pt in event and pt for each track (new column `diff_pt` will be added into data) 
+    """
     max_pt = group_max(data[event_id_column].values.astype(str), data.partPt.values)
     data.loc[:, 'diff_pt'] = max_pt - data['partPt'].values
 
 
-# max is computing max over tracks in the same event for saome data
 def group_max(groups, data):
+    """
+    max is computing over tracks in the same event for the same data
+    """
     # computing unique integer id for each group
     assert len(groups) == len(data)
     _, event_id = numpy.unique(groups, return_inverse=True)
@@ -165,12 +256,13 @@ def group_max(groups, data):
     return max_over_event[event_id]
 
 
-def combine_taggers(tagger_outputs, tagger_keys):
+def combine_taggers_old_scheme(tagger_outputs, tagger_keys):
     """
     Copy-pasted formulas (5.1), (5.2) from [TODO link].
     Formulas by themselves are not readable, please refer to context.
     
     :param tagger_outputs: output of tagger for tracks. 
+    
      There are 4 taggers, each having 
      tag_n - tagger output. 
      prob_n - probability of right tagged.
@@ -190,7 +282,11 @@ def combine_taggers(tagger_outputs, tagger_keys):
     return tag_result, 1 - probs_wrong, tagger_outputs.weight.values, tagger_outputs.signB.values
 
 
-def prepare_B_data(data_with_predictions, tagger_keys):
+def prepare_B_data_old_scheme(data_with_predictions, tagger_keys, flavour_column=None):
+    """
+    Old scheme: combine taggers all together and return B data (tags, probabilities, weights, b-quark labels)
+    Also if mass and time are in data then mass and time are also returned.
+    """
     # collecting all together, 
     # setting tag_n = -99 if untagged
     data_combined = pandas.DataFrame({'event_id': numpy.unique(numpy.concatenate([d.index.values for d in 
@@ -203,32 +299,88 @@ def prepare_B_data(data_with_predictions, tagger_keys):
         data_combined['prob_{}'.format(key)] = 0.5
         data_combined['tag_{}'.format(key)] = 1
     for key, d in data_with_predictions.items():
-        data_combined.ix[d.index, 'prob_{}'.format(key)] = d['prob_{}'.format(key)]
-        data_combined.ix[d.index, 'tag_{}'.format(key)] = d['tag_{}'.format(key)]
-        data_combined.ix[d.index, 'weight'] = d['weight']
-        data_combined.ix[d.index, 'signB'] = d['signB']
+        data_combined.loc[d.index, 'prob_{}'.format(key)] = d['prob_{}'.format(key)]
+        data_combined.loc[d.index, 'tag_{}'.format(key)] = d['tag_{}'.format(key)]
+        data_combined.loc[d.index, 'weight'] = d['weight']
+        data_combined.loc[d.index, 'signB'] = d['signB']
         br = set(d.columns)
-        if 'mass' in br and 'time' in br:
-            data_combined.ix[d.index, 'time'] = d['time']
-            data_combined.ix[d.index, 'mass'] = d['mass']
+        if 'mass' in br and 'time' in br and flavour_column in br:
+            data_combined.loc[d.index, 'time'] = d['time']
+            data_combined.loc[d.index, 'mass'] = d['mass']
+            data_combined.loc[d.index, flavour_column] = d[flavour_column]
             mask_mass_time = True
     # getting predictions    
-    tags, Bprobs, Bweights, Bsign = combine_taggers(data_combined, tagger_keys)
+    tags, Bprobs, Bweights, Bsign = combine_taggers_old_scheme(data_combined, tagger_keys)
     mask = ~numpy.isnan(Bprobs)
     tags = tags[mask]
     Bweights = Bweights[mask]
     Bsign = Bsign[mask]
     Bprobs = Bprobs[mask]
     if mask_mass_time:
-        return tags, Bprobs, Bweights, Bsign, data_combined.mass.values, data_combined.time.values
+        return tags, Bprobs, Bweights, Bsign, data_combined.mass.values, data_combined.time.values, data_combined[flavour_column].values
     else:
         return tags, Bprobs, Bweights, Bsign
 
+    
+def prepare_for_epm_old_scheme(estimators, datasets, keys, calibrator_tracks, calibrator_B, N_B_events,
+                               flavour_column='K_MCID'):
+    data_with_predictions = dict()
+    for key in keys:
+        probs = estimators[key].predict_proba(datasets[key])[:, 1]
+        probs_calibrated = calibrator_tracks[key].predict_proba(probs)
+    
+        data_with_predictions[key] = pandas.DataFrame({'prob_{}'.format(key): probs_calibrated, 
+                                                      'tag_{}'.format(key): datasets[key].tagAnswer.values,
+                                                      'weight': datasets[key].N_sig_sw.values,
+                                                      'signB': datasets[key].signB.values,
+                                                      'mass': datasets[key].Bmass.values,
+                                                      'time': datasets[key]['time'].values, 
+                                                      flavour_column: datasets[key][flavour_column].values},
+                                                      index=numpy.array(datasets[key]['event_id']))
+        
+    result = prepare_B_data_old_scheme(data_with_predictions, keys, flavour_column=flavour_column)
+    tags, Bprobs, Bweights, Bsign, Bmass, Btime, Bflavour = result
+    Bprob_calibrated = calibrator_B.predict_proba(Bprobs)
+    
+    print 'eff tag: ', 1. * sum(Bweights) / N_B_events
+    print "D2:", numpy.average((1 - 2*Bprob_calibrated)**2, weights=Bweights)
+    print 'eff:', 1. * sum(Bweights) / N_B_events * numpy.average((1 - 2*Bprob_calibrated)**2, weights=Bweights)
+    
+    
+    mistag = numpy.minimum(Bprob_calibrated, 1 - Bprob_calibrated)
+    tag = numpy.ones(len(Bprob_calibrated))
+    tag[Bprob_calibrated < 0.5] = -1
 
-def run_taggers_combination(data_with_predictions, tagger_keys, N_B_events, model_name="", 
-                            random_state=42, logistic_combined=False):
+    prepared_data = pandas.DataFrame({'tag': numpy.array(tag, dtype='int32'),
+                                      'mistag': mistag,
+                                      'flavour': numpy.array(Bflavour, dtype='int32'),
+                                      'decay_time': Btime,
+                                      'Bmass': Bmass,
+                                      'resolution': [50*1e-3] * len(Bmass),
+                                      'probs': Bprob_calibrated,
+                                      'weight': Bweights,
+                                      'signB': Bsign
+                                     })
+    prepared_data_missed = pandas.DataFrame({'tag': [-1],
+                                      'mistag': [0.5],
+                                      'flavour': [0],
+                                      'decay_time': [0.],
+                                      'Bmass': [0.],
+                                      'resolution': [50*1e-3],
+                                      'probs': [0.5],
+                                      'weight': [N_B_events - sum(Bweights)],
+                                      'signB': [0]
+                                     })
+    return pandas.concat([prepared_data, prepared_data_missed])
+    #return prepared_data
 
-    tags, Bprobs, Bweights, Bsign = prepare_B_data(data_with_predictions, tagger_keys)
+
+def estimate_taggers_old_scheme(data_with_predictions, tagger_keys, N_B_events, model_name="", 
+                                random_state=42, logistic_combined=False, flavour_column='K_MCID'):
+    """
+    Compute combination of taggers and estimate calibrated output quality (effective efficiency) by bootstrapping.
+    """
+    tags, Bprobs, Bweights, Bsign = prepare_B_data_old_scheme(data_with_predictions, tagger_keys, flavour_column=flavour_column)
     Bprob_calibrated, calibration_B = calibrate_probs(Bsign, Bweights, Bprobs, random_state=random_state, symmetrize=True,
                                                       logistic=logistic_combined)
 
@@ -262,6 +414,9 @@ def run_taggers_combination(data_with_predictions, tagger_keys, N_B_events, mode
 
 
 def estimate_new_data_old_scheme(estimators, datasets, keys, calibrator_tracks, calibrator_B, N_B_events, model_name='old'):
+    """
+    Estimate trained tagger on the new sample by old scheme. Compute final quality: effective efficiency.
+    """
     data_with_predictions = dict()
     for key in keys:
         probs = estimators[key].predict_proba(datasets[key])[:, 1]
@@ -273,7 +428,7 @@ def estimate_new_data_old_scheme(estimators, datasets, keys, calibrator_tracks, 
                                                       'signB': datasets[key].signB.values}, 
                                                       index=numpy.array(datasets[key]['event_id']))
         
-    tags, Bprobs, Bweights, Bsign = prepare_B_data(data_with_predictions, keys)
+    tags, Bprobs, Bweights, Bsign = prepare_B_data_old_scheme(data_with_predictions, keys)
     Bprob_calibrated = calibrator_B.predict_proba(Bprobs)
     
     percentile_bins = [10, 20, 30, 40, 50, 60, 70, 80, 90]
@@ -332,9 +487,9 @@ def plot_flattened_probs(probs, labels, weights, label=1, check_input=True):
 
 def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, threshold=0., symmetrize=False, logistic=False):
     """
-    Bootstrap isotonic calibration: 
+    Bootstrap calibration: 
      * randomly divide data into train-test
-     * on train isotonic is fitted and applyed to test
+     * on train calibration rule is fitted and applyed to test
      * on test using calibrated probs p(B+) D2 and auc are calculated 
     
     :param probs: probabilities, numpy.array of shape [n_samples]
@@ -377,7 +532,7 @@ def bootstrap_calibrate_prob(labels, weights, probs, n_calibrations=30, threshol
 
 def predict_by_estimator(estimator, datasets, features=None):
     '''
-    Predict data by classifier
+    Predict data by estimator
     Important note: this also works correctly if classifier is FoldingClassifier and one of dataframes is his training data.
     
     :param estimator: REP classifier, already trained model.
@@ -485,7 +640,8 @@ def calculate_roc_with_untag_events(Bsign, Bprobs, Bweights, N_B_events):
 
 
 def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_id_column='event_id', signB_column='signB',
-                                   sign_part_column='signTrack', normed_signs=False, prior_probs=None, functor=None):
+                                   sign_part_column='signTrack', normed_signs=False, prior_probs=None, functor=None,
+                                   for_epm=False):
     """
     Compute p(B+) using probs for parts of event (tracks/vertices).
     
@@ -515,10 +671,17 @@ def compute_B_prob_using_part_prob(data, probs, weight_column='N_sig_sw', event_
     # simply reconstructing original
     result_label = numpy.bincount(data_ids, weights=data[signB_column].values) / numpy.bincount(data_ids)
     result_weight = numpy.bincount(data_ids, weights=data[weight_column]) / numpy.bincount(data_ids)
-    return result_label, result_weight, expit(result_logprob), result_event_id
+    if for_epm:
+        result_mass = numpy.bincount(data_ids, weights=data['Bmass']) / numpy.bincount(data_ids)
+        result_time = numpy.bincount(data_ids, weights=data['time']) / numpy.bincount(data_ids)
+        result_flavour = numpy.bincount(data_ids, weights=data['K_MCID']) / numpy.bincount(data_ids)
+        return result_label, result_weight, expit(result_logprob), result_event_id, result_mass, result_time, result_flavour
+    else:
+        return result_label, result_weight, expit(result_logprob), result_event_id
 
 
-def get_B_data_for_given_part(part_probs, data_calib, N_B_events, logistic=True, sign_part_column='signTrack', part_name='track',
+def get_B_data_for_given_part(part_probs, data_calib, N_B_events, logistic=True, sign_part_column='signTrack',
+                              part_name='track',
                               random_state=42, normed_signs=False, prior_probs=None):
     """
     Predict probabilities for event parts, calibrate it and compute B data.
@@ -584,10 +747,11 @@ def get_result_with_bootstrap_for_given_part(tagging_efficiency, tagging_efficie
     
     :return: pandas.DataFrame with only one row, describing result_table
     """
-    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
+    data_calib, part_probs = predict_by_estimator(estimator, datasets)
+    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(part_probs, data_calib, N_B_events, logistic=logistic, 
                                                                         sign_part_column=sign_part_column, 
                                                                         part_name=part_name, random_state=random_state,
-                                                                        normed_signs=normed_signs, N_B_events=N_B_events)    
+                                                                        normed_signs=normed_signs)    
     # Compute p(B+) calibrated with bootstrap
     D2, aucs = bootstrap_calibrate_prob(Bsign, Bweight, Bprob, n_calibrations=n_calibrations, logistic=logistic_combined,
                                         symmetrize=symmetrize)
@@ -613,10 +777,11 @@ def estimate_quality(tagging_efficiency, tagging_efficiency_delta, estimator,
     
     :return: pandas.DataFrame with only one row, describing result_table
     """
-    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
+    data_calib, part_probs = predict_by_estimator(estimator, datasets)
+    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(part_probs, data_calib, N_B_events, logistic=logistic, 
                                                                         sign_part_column=sign_part_column, 
                                                                         part_name=part_name, random_state=random_state,
-                                                                        normed_signs=normed_signs, N_B_events=N_B_events)    
+                                                                        normed_signs=normed_signs)    
     Bprob_calib, _ = calibrate_probs(Bsign, Bweight, Bprob, logistic=logistic_combined, symmetrize=symmetrize, random_state=random_state)
     plot_calibration(Bprob_calib, Bsign > 0, weight=Bweight)
     auc, _ = calculate_auc_with_and_without_untag_events(Bsign, Bprob, Bweight, N_B_events)
@@ -640,11 +805,11 @@ def prepare_B_data_for_given_part(estimator, datasets, N_B_events, logistic=True
     
     :return: pandas.DataFrame with keys: `event_id` - B id, `Bweight` - B weight, `{part_name}_relation_prob` p(B+) / (1 - p(B+)) for given part, `Bsign` - sign B
     """
-    
-    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(estimator, datasets, logistic=logistic, 
+    data_calib, part_probs = predict_by_estimator(estimator, datasets)
+    Bsign, Bweight, Bprob, Bevent, auc_full = get_B_data_for_given_part(part_probs, data_calib, N_B_events, logistic=logistic, 
                                                                         sign_part_column=sign_part_column, 
                                                                         part_name=part_name, random_state=random_state,
-                                                                        normed_signs=normed_signs, N_B_events=N_B_events)    
+                                                                        normed_signs=normed_signs)    
     # Roc curve
     fpr, tpr, _ = roc_curve(Bsign, Bprob, sample_weight=Bweight)
     plt.plot(fpr, tpr)
@@ -787,14 +952,17 @@ def plot_calibration(p, labels, bins=[10, 20, 30, 40, 50, 60, 70, 80, 90], weigh
     
     
 def estimate_channel(part_prob, data, N_B_events, name="", calibrator_tracks=None, calibrator_B=None, 
-                     logistic=False, prior=None, mask_to_invert=None):       
+                     logistic=False, prior=None, mask_to_invert=None, for_epm=False):       
+    """
+    Estimate trained inclusive tagger on the new decay channel
+    """
     print "Calibrate tracks"
     if calibrator_tracks is not None:
         # calibrate parts predictions
         part_probs_calib = calibrator_tracks.predict_proba(part_prob)
     else:
-        part_probs_calib, _ = calibrate_probs(data.label.values, data.N_sig_sw.values, part_prob,
-                                              logistic=True, random_state=13)
+        part_probs_calib, calibrator_self = calibrate_probs(data.label.values, data.N_sig_sw.values, part_prob,
+                                                            logistic=True, random_state=13)
     if prior is not None:
         part_probs_calib = prior*(1 - part_probs_calib) + (1-prior)*part_probs_calib
     if mask_to_invert is not None:
@@ -809,13 +977,16 @@ def estimate_channel(part_prob, data, N_B_events, name="", calibrator_tracks=Non
     plot_calibration(part_probs_calib, data.label)
 
     # Compute p(B+)
-    Bsign, Bweight, Bprobs, Bevent = compute_B_prob_using_part_prob(data, part_probs_calib, 
-                                                                    sign_part_column='signTrack')
+    if for_epm:
+        Bsign, Bweight, Bprobs, Bevent, Bmass, Btime, Bflavour = compute_B_prob_using_part_prob(data, part_probs_calib, sign_part_column='signTrack', for_epm=True)
+    else:
+        Bsign, Bweight, Bprobs, Bevent = compute_B_prob_using_part_prob(data, part_probs_calib, 
+                                                                        sign_part_column='signTrack')
     print "Calibrate B"
     if calibrator_B is not None:        
         Bprobs_calib = calibrator_B.predict_proba(Bprobs)
     else:
-        Bprobs_calib, _ = calibrate_probs(Bsign, Bweight, Bprobs, symmetrize=True, logistic=logistic)
+        Bprobs_calib, calibrator_B_self = calibrate_probs(Bsign, Bweight, Bprobs, symmetrize=True, logistic=logistic)
 
     alpha = (1 - 2 * Bprobs) ** 2
     print 'dilution, without B calibration', numpy.average(alpha, weights=Bweight)
@@ -860,4 +1031,25 @@ def estimate_channel(part_prob, data, N_B_events, name="", calibrator_tracks=Non
     tagging_efficiency = sum(Bweight) / N_B_events
     tagging_efficiency_delta = numpy.sqrt(sum(Bweight)) / N_B_events
     
-    return result_table(tagging_efficiency, tagging_efficiency_delta, D2, [auc_full], name)
+    prepared_data = None
+    if for_epm:
+        mistag = numpy.minimum(Bprobs_calib, 1 - Bprobs_calib)
+        tag = numpy.ones(len(Bprobs_calib))
+        tag[Bprobs_calib < 0.5] = -1
+
+        prepared_data = pandas.DataFrame({'tag': numpy.array(tag, dtype='int32'),
+                                          'mistag': mistag,
+                                          'flavour': numpy.array(Bflavour, dtype='int32'),
+                                          'decay_time': Btime,
+                                          'Bmass': Bmass,
+                                          'resolution': [50*1e-3] * len(Bweight),
+                                          'probs': Bprobs_calib,
+                                          'weight': Bweight,
+                                          'signB': Bsign
+                                         })
+
+    if calibrator_tracks is None and calibrator_B is None:
+        return calibrator_self, calibrator_B_self, result_table(tagging_efficiency, 
+                                                                tagging_efficiency_delta, D2, [auc_full], name), prepared_data
+    else:
+        return result_table(tagging_efficiency, tagging_efficiency_delta, D2, [auc_full], name), prepared_data
